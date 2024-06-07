@@ -1,0 +1,176 @@
+// https://wokwi.com/projects/399745516462050305
+#include <Arduino.h>
+#include <Servo.h>
+#include <Arduino_FreeRTOS.h>
+#include <task.h>
+#include <queue.h>
+
+// Pin Definitions
+#define STEP_PIN 2
+#define DIR_PIN 3
+#define SERVO1_PIN 9
+#define SERVO2_PIN 10
+#define POT_PIN A0
+#define BUTTON_PIN 7
+
+// Servo objects
+Servo servo1;
+Servo servo2;
+
+// Task Handlers
+TaskHandle_t servo1TaskHandle = NULL;
+TaskHandle_t stepperTaskHandle = NULL;
+TaskHandle_t servo2TaskHandle = NULL;
+TaskHandle_t buttonTaskHandle = NULL;
+TaskHandle_t buttonHandlerTaskHandle = NULL;
+
+// Queue Handle
+QueueHandle_t buttonQueue;
+
+// Function Prototypes
+void servo1Task(void *pvParameters);
+void stepperTask(void *pvParameters);
+void servo2Task(void *pvParameters);
+void buttonTask(void *pvParameters);
+void buttonHandlerTask(void *pvParameters);
+
+void setup() {
+  Serial.begin(9600);
+  while (!Serial); // Wait for serial to initialize
+  Serial.println("Setup start");
+  servo1.attach(SERVO1_PIN);
+  servo2.attach(SERVO2_PIN);
+  // Stepper Motor
+  pinMode(STEP_PIN, OUTPUT);
+  pinMode(DIR_PIN, OUTPUT);
+  //Button Pin
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  // Button Queue
+  buttonQueue = xQueueCreate(1, sizeof(bool));
+  if (buttonQueue == NULL) {
+    Serial.println("Failed to create buttonQueue");
+  } else {
+    Serial.println("buttonQueue created successfully");
+  }
+  BaseType_t result;
+  Serial.println("Creating Servo 1 Task...");
+  result = xTaskCreate(servo1Task, "Servo 1 Task", 256, NULL, 1, &servo1TaskHandle);
+  if (result != pdPASS) {
+    Serial.println("Failed to create Servo 1 Task");
+  } else {
+    Serial.println("Servo 1 Task created successfully");
+  }
+
+  Serial.println("Creating Stepper Task...");
+  result = xTaskCreate(stepperTask, "Stepper Task", 256, NULL, 1, &stepperTaskHandle);
+  if (result != pdPASS) {
+    Serial.println("Failed to create Stepper Task");
+  } else {
+    Serial.println("Stepper Task created successfully");
+  }
+
+  Serial.println("Creating Servo 2 Task...");
+  result = xTaskCreate(servo2Task, "Servo 2 Task", 256, NULL, 1, &servo2TaskHandle);
+  if (result != pdPASS) {
+    Serial.println("Failed to create Servo 2 Task");
+  } else {
+    Serial.println("Servo 2 Task created successfully");
+  }
+
+  Serial.println("Creating Button Task...");
+  result = xTaskCreate(buttonTask, "Button Task", 256, NULL, 2, &buttonTaskHandle);
+  if (result != pdPASS) {
+    Serial.println("Failed to create Button Task");
+  } else {
+    Serial.println("Button Task created successfully");
+  }
+
+  Serial.println("Creating Button Handler Task...");
+  result = xTaskCreate(buttonHandlerTask, "Button Handler Task", 256, NULL, 3, &buttonHandlerTaskHandle);
+  if (result != pdPASS) {
+    Serial.println("Failed to create Button Handler Task");
+  } else {
+    Serial.println("Button Handler Task created successfully");
+  }
+
+  vTaskStartScheduler();
+}
+
+void loop() {
+
+}
+
+void servo1Task(void *pvParameters) {
+  bool servo1State = false;
+  while (1) {
+    if (servo1State) {
+      servo1.write(0);
+    } else {
+      servo1.write(90);
+    }
+    servo1State = !servo1State;
+    vTaskDelay(500 / portTICK_PERIOD_MS);
+  }
+}
+
+void stepperTask(void *pvParameters) {
+  while (1) {
+    // Stepper Direction
+    digitalWrite(DIR_PIN, HIGH);
+    // Stepping
+    digitalWrite(STEP_PIN, HIGH);
+    delayMicroseconds(1000);
+    digitalWrite(STEP_PIN, LOW);
+    delayMicroseconds(1000);
+    vTaskDelay(500 / portTICK_PERIOD_MS);
+  }
+}
+
+void servo2Task(void *pvParameters) {
+  while (1) {
+    int potValue = analogRead(POT_PIN);
+    int angle = map(potValue, 0, 1023, 0, 180);
+    if (angle < 90) {
+      servo2.write(90);
+    } else {
+      servo2.write(-90);
+    }
+    vTaskDelay(500 / portTICK_PERIOD_MS);
+  }
+}
+
+void buttonTask(void *pvParameters) {
+  while (1) {
+    bool buttonState = digitalRead(BUTTON_PIN) == LOW;
+    if (buttonState) {
+      Serial.println("Button pressed");
+      if (xQueueSend(buttonQueue, &buttonState, portMAX_DELAY) == pdPASS) {
+        Serial.println("Button press sent to queue");
+      } else {
+        Serial.println("Failed to send button press to queue");
+      }
+      vTaskPrioritySet(NULL, configMAX_PRIORITIES - 1); // Highest priority
+    }
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+  }
+}
+
+void buttonHandlerTask(void *pvParameters) {
+  bool buttonState;
+  while (1) {
+    if (xQueueReceive(buttonQueue, &buttonState, portMAX_DELAY)) {
+      Serial.println("Button received from queue");
+      if (buttonState) {
+        if (stepperTaskHandle != NULL) {
+          vTaskDelete(stepperTaskHandle);
+          stepperTaskHandle = NULL;
+          Serial.println("Stepper Task Deleted");
+          vTaskDelay(5000 / portTICK_PERIOD_MS);
+
+          Serial.println("Stepper Task Recreated");
+          xTaskCreate(stepperTask, "Stepper Task", 256, NULL, 1, &stepperTaskHandle);
+        }
+      }
+    }
+  }
+}
